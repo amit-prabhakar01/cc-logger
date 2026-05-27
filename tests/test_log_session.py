@@ -514,5 +514,185 @@ class TestMinToolCallsToWrite(unittest.TestCase):
 
 
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+class TestTranscriptRecovery(unittest.TestCase):
+    """Mid-session install: recover prior tool calls from transcript JSONL."""
+
+    def _write_transcript(self, path, tool_calls):
+        """
+        Write a minimal JSONL transcript.
+        tool_calls = list of (tool_use_id, tool_name, tool_input, tool_result)
+        """
+        lines = []
+        for tid, name, inp, result in tool_calls:
+            # Assistant message with tool_use block
+            lines.append(json.dumps({
+                "role": "assistant",
+                "content": [{"type": "tool_use", "id": tid, "name": name, "input": inp}]
+            }))
+            # User message with tool_result block
+            lines.append(json.dumps({
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": tid, "content": result}]
+            }))
+        Path(path).write_text("\n".join(lines), encoding="utf-8")
+
+    def test_recovers_bash_calls_before_current(self):
+        """Prior Bash calls appear in recovered list; current call is excluded."""
+        with tempfile.TemporaryDirectory() as d:
+            transcript = Path(d) / "session.jsonl"
+            self._write_transcript(str(transcript), [
+                ("tool-001", "Bash", {"command": "git status"}, "On branch main"),
+                ("tool-002", "Bash", {"command": "npm test"},   "3 passed"),
+                ("tool-003", "Bash", {"command": "echo live"},  "live"),   # ← current call
+            ])
+            config = {
+                "excludeTools": ["Read", "Glob", "Grep"],
+                "includeTools": [],
+            }
+            recovered = ls.recover_prior_tool_calls(str(transcript), "tool-003", config)
+            self.assertEqual(len(recovered), 2)
+            commands = [r["tool_input"]["command"] for r in recovered]
+            self.assertIn("git status", commands)
+            self.assertIn("npm test",   commands)
+            self.assertNotIn("echo live", commands)
+
+    def test_excluded_tools_skipped_during_recovery(self):
+        """Read and Glob calls are not recovered when they are in excludeTools."""
+        with tempfile.TemporaryDirectory() as d:
+            transcript = Path(d) / "session.jsonl"
+            self._write_transcript(str(transcript), [
+                ("tool-001", "Read", {"file_path": "src/main.py"}, "content"),
+                ("tool-002", "Bash", {"command": "git log"},       "abc123"),
+                ("tool-003", "Glob", {"pattern": "**/*.py"},       "main.py"),
+                ("tool-004", "Edit", {"file_path": "src/main.py",
+                                      "old_string": "a", "new_string": "b"}, ""),
+            ])
+            config = {
+                "excludeTools": ["Read", "Glob", "Grep"],
+                "includeTools": [],
+            }
+            recovered = ls.recover_prior_tool_calls(str(transcript), "CURRENT", config)
+            names = [r["tool_name"] for r in recovered]
+            self.assertNotIn("Read", names)
+            self.assertNotIn("Glob", names)
+            self.assertIn("Bash", names)
+            self.assertIn("Edit", names)
+
+    def test_empty_transcript_returns_empty_list(self):
+        """An empty transcript file returns [] without raising."""
+        with tempfile.TemporaryDirectory() as d:
+            transcript = Path(d) / "session.jsonl"
+            transcript.write_text("", encoding="utf-8")
+            config = {"excludeTools": [], "includeTools": []}
+            recovered = ls.recover_prior_tool_calls(str(transcript), "CURRENT", config)
+            self.assertEqual(recovered, [])
+
+    def test_malformed_jsonl_returns_empty_list(self):
+        """Malformed JSONL is skipped gracefully; function never raises."""
+        with tempfile.TemporaryDirectory() as d:
+            transcript = Path(d) / "session.jsonl"
+            transcript.write_text(
+                'not json at all\n{broken\n{"role":"user","content":[]}\n',
+                encoding="utf-8",
+            )
+            config = {"excludeTools": [], "includeTools": []}
+            recovered = ls.recover_prior_tool_calls(str(transcript), "CURRENT", config)
+            self.assertEqual(recovered, [])
+
+    def test_missing_transcript_returns_empty_list(self):
+        """Non-existent transcript path returns [] without raising."""
+        config = {"excludeTools": [], "includeTools": []}
+        recovered = ls.recover_prior_tool_calls("/nonexistent/path.jsonl", "CURRENT", config)
+        self.assertEqual(recovered, [])
+
+    def test_recovery_banner_written_to_session_md(self):
+        """When prior calls exist, session.md header contains the recovery notice."""
+        with tempfile.TemporaryDirectory() as d:
+            # Set up project layout
+            sessions_dir = Path(d) / ".claude" / "sessions"
+            sessions_dir.mkdir(parents=True)
+            transcript   = sessions_dir / "session.jsonl"
+            self._write_transcript(str(transcript), [
+                ("prior-001", "Bash", {"command": "git status"}, "clean"),
+                ("prior-002", "Bash", {"command": "ls -la"},     "total 8"),
+            ])
+
+            # The "live" call that triggers the hook
+            live_payload = {
+                "hook_event_name": "PostToolUse",
+                "session_id":      "recovery-test-0000-0000-000000000001",
+                "transcript_path": str(transcript),
+                "cwd":             d,
+                "tool_name":       "Bash",
+                "tool_use_id":     "live-001",
+                "tool_input":      {"command": "echo hello"},
+                "tool_response":   {"output": "hello", "exit_code": 0},
+            }
+
+            project_root = ls.resolve_project_root(live_payload["transcript_path"])
+            config       = ls.load_config(project_root)
+            config["excludeTools"] = []   # capture everything for this test
+            logs_root    = project_root / "logs"
+            session_dir  = ls.get_or_create_session_dir(logs_root, live_payload["session_id"])
+
+            # Simulate the recovery block in main()
+            json_file = session_dir / "session.json"
+            self.assertFalse(json_file.exists(), "session.json should not exist yet")
+
+            prior_calls = ls.recover_prior_tool_calls(
+                live_payload["transcript_path"],
+                live_payload["tool_use_id"],
+                config,
+            )
+            self.assertEqual(len(prior_calls), 2, "Should recover 2 prior calls")
+
+            # Write recovery banner + backfill entries
+            md_file = session_dir / "session.md"
+            md_file.write_text(
+                "# cc-logger Session\n\n"
+                f"> ⚠️ **cc-logger was installed mid-session.**  "
+                f"{len(prior_calls)} prior tool call(s) were recovered from the transcript.\n\n---\n",
+                encoding="utf-8",
+            )
+            for i, rec in enumerate(prior_calls, start=1):
+                rec_payload = {**live_payload,
+                               "tool_name": rec["tool_name"],
+                               "tool_input": rec["tool_input"],
+                               "tool_response": rec["tool_response"]}
+                counter = session_dir / ".call_index"
+                counter.write_text(str(i))
+                ls.write_markdown_entry(session_dir, rec_payload, i, config)
+                ls.append_json_entry(session_dir, rec_payload, i, config)
+
+            md_text = md_file.read_text()
+            self.assertIn("mid-session", md_text)
+            self.assertIn("recovered from the transcript", md_text)
+            self.assertIn("git status", md_text)
+            self.assertIn("ls -la",     md_text)
+
+            # JSON should have both recovered calls
+            data = json.loads(json_file.read_text())
+            self.assertEqual(data["summary"]["total_tool_calls"], 2)
+
+    def test_include_tools_filter_respected_during_recovery(self):
+        """includeTools whitelist is applied during recovery."""
+        with tempfile.TemporaryDirectory() as d:
+            transcript = Path(d) / "session.jsonl"
+            self._write_transcript(str(transcript), [
+                ("t1", "Bash", {"command": "git log"}, "abc"),
+                ("t2", "Edit", {"file_path": "a.py"},  ""),
+                ("t3", "Bash", {"command": "ls"},      "file.py"),
+            ])
+            config = {
+                "excludeTools": [],
+                "includeTools": ["Edit"],   # only log Edit calls
+            }
+            recovered = ls.recover_prior_tool_calls(str(transcript), "CURRENT", config)
+            names = [r["tool_name"] for r in recovered]
+            self.assertEqual(names, ["Edit"])
+
+
 if __name__ == "__main__":
     unittest.main()

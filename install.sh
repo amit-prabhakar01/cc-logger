@@ -179,6 +179,26 @@ echo "  Hook:   .claude/hooks/log_session.py"
 echo "  Config: .claude-logger.json"
 echo "  Logs:   ./logs/<session>/"
 echo ""
-echo "  Start a Claude Code session — your first log appears automatically."
+
+# Check for a running Claude Code process (exact binary name match,
+# excluding this installer script itself)
+CLAUDE_RUNNING=false
+if pgrep -x "claude" > /dev/null 2>&1; then
+  CLAUDE_RUNNING=true
+elif pgrep -x "Claude" > /dev/null 2>&1; then
+  CLAUDE_RUNNING=true
+fi
+
+if [ "$CLAUDE_RUNNING" = true ]; then
+  warn "Claude Code is running — start a NEW session for hooks to take effect."
+  echo "     cc-logger will automatically recover any tool calls that"
+  echo "     happened before this install when the new session begins."
+  echo ""
+else
+  echo "  Start a Claude Code session — your first log appears automatically."
+  echo "  (If Claude Code is already open, start a new session first.)"
+  echo ""
+fi
+
 echo "  Disable logging anytime: export NO_CC_LOGS=1"
 echo ""

@@ -214,6 +214,109 @@ def get_git_diff_stat(cwd: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Mid-session recovery — backfill tool calls from transcript JSONL
+# ---------------------------------------------------------------------------
+
+def recover_prior_tool_calls(
+    transcript_path: str,
+    current_tool_use_id: str,
+    config: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """
+    Parse the transcript JSONL and return tool calls that fired before the
+    current one.  Called only on the very first hook invocation of a session
+    (i.e. when session.json does not yet exist) so that installs mid-session
+    still capture everything that happened beforehand.
+
+    Returns a list of dicts with keys: tool_name, tool_input, tool_response.
+    Returns [] on any parse error — always fails gracefully.
+    """
+    recovered: List[Dict[str, Any]] = []
+    try:
+        with open(transcript_path, "r", encoding="utf-8") as f:
+            lines = [ln.strip() for ln in f if ln.strip()]
+
+        # Build ordered map: tool_use_id -> {name, input}
+        tool_uses: Dict[str, Dict[str, Any]] = {}
+        tool_use_order: List[str] = []
+        # Map: tool_use_id -> raw result content
+        tool_results: Dict[str, Any] = {}
+
+        for line in lines:
+            try:
+                msg = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            content = msg.get("content", [])
+            if not isinstance(content, list):
+                continue
+
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                btype = block.get("type", "")
+
+                if btype == "tool_use":
+                    tid = block.get("id", "")
+                    # Stop before the current live tool call
+                    if tid == current_tool_use_id:
+                        break
+                    if tid and tid not in tool_uses:
+                        tool_uses[tid] = {
+                            "name":  block.get("name", "Unknown"),
+                            "input": block.get("input", {}),
+                        }
+                        tool_use_order.append(tid)
+
+                elif btype == "tool_result":
+                    tid = block.get("tool_use_id", "")
+                    if not tid:
+                        continue
+                    raw = block.get("content", "")
+                    # content may be a string or list of typed blocks
+                    if isinstance(raw, list):
+                        parts = [
+                            b.get("text", "")
+                            for b in raw
+                            if isinstance(b, dict) and b.get("type") == "text"
+                        ]
+                        tool_results[tid] = "\n".join(parts)
+                    else:
+                        tool_results[tid] = str(raw) if raw else ""
+
+        # Apply the same tool filters as the live path
+        exclude = config.get("excludeTools", DEFAULT_EXCLUDE_TOOLS)
+        include = config.get("includeTools", [])
+
+        for tid in tool_use_order:
+            use = tool_uses[tid]
+            tool_name = use["name"]
+            if include and tool_name not in include:
+                continue
+            if not include and tool_name in exclude:
+                continue
+
+            raw_result = tool_results.get(tid, "")
+            # Reconstruct a tool_response shape the formatters understand
+            if tool_name == "Bash":
+                tool_response: Any = {"output": raw_result, "exit_code": 0}
+            else:
+                tool_response = raw_result
+
+            recovered.append({
+                "tool_use_id":   tid,
+                "tool_name":     tool_name,
+                "tool_input":    use["input"],
+                "tool_response": tool_response,
+            })
+
+    except Exception:
+        pass
+
+    return recovered
+
+# ---------------------------------------------------------------------------
 # Tool-specific formatters
 # ---------------------------------------------------------------------------
 
@@ -571,6 +674,54 @@ def main() -> None:
         if hook_event == "Stop":
             write_markdown_summary(session_dir, payload)
             sys.exit(0)
+
+        # Mid-session install recovery:
+        # If session.json doesn't exist yet this is the first hook invocation.
+        # Backfill any tool calls that fired before cc-logger was installed by
+        # reading them straight from the transcript JSONL.
+        json_file = session_dir / "session.json"
+        if not json_file.exists() and transcript_path:
+            prior_calls = recover_prior_tool_calls(
+                transcript_path,
+                payload.get("tool_use_id", ""),
+                config,
+            )
+            if prior_calls:
+                # Write a recovery banner into session.md
+                md_file = session_dir / "session.md"
+                cwd         = payload.get("cwd", "unknown")
+                session_id  = payload.get("session_id", "unknown")
+                started     = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+                git         = get_git_state(cwd)
+                branch_line = f"| Branch | `{git.get('branch','—')}` |\n" if git else ""
+                head_line   = f"| Commit | `{git.get('head','—')}` |\n" if git else ""
+                header = (
+                    f"# cc-logger Session · {started}\n\n"
+                    f"| Field | Value |\n"
+                    f"|-------|-------|\n"
+                    f"| Session ID | `{session_id[:16]}...` |\n"
+                    f"| Working Dir | `{cwd}` |\n"
+                    f"{branch_line}{head_line}"
+                    f"\n> ⚠️ **cc-logger was installed mid-session.**  "
+                    f"{len(prior_calls)} prior tool call(s) were recovered from the transcript.\n"
+                    f"\n---\n"
+                )
+                md_file.write_text(header, encoding="utf-8")
+
+                # Replay each recovered call through the normal writers
+                for i, recovered in enumerate(prior_calls, start=1):
+                    recovered_payload = {
+                        **payload,
+                        "tool_name":     recovered["tool_name"],
+                        "tool_use_id":   recovered["tool_use_id"],
+                        "tool_input":    recovered["tool_input"],
+                        "tool_response": recovered["tool_response"],
+                    }
+                    # Increment the counter file manually
+                    counter_file = session_dir / ".call_index"
+                    counter_file.write_text(str(i))
+                    write_markdown_entry(session_dir, recovered_payload, i, config)
+                    append_json_entry(session_dir, recovered_payload, i, config)
 
         # PostToolUse → apply tool filters
         exclude = config.get("excludeTools", DEFAULT_EXCLUDE_TOOLS)
