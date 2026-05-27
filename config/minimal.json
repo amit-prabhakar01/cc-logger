@@ -1,0 +1,12 @@
+{
+  "_comment": "cc-logger · Minimal preset — logs only tool name, timestamp, and status. No input/output content. Ideal for high-volume sessions where you just want a timeline.",
+  "enabled": true,
+  "filtering": {
+    "excludeTools": ["Read", "Glob", "Grep", "Bash"],
+    "includeTools": []
+  },
+  "output": {
+    "maxInlineChars": 0,
+    "minToolCallsToWrite": 3
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "hook_event_name": "PostToolUse",
+  "session_id": "550e8400-e29b-41d4-a716-446655440000",
+  "transcript_path": "/tmp/test_project/.claude/sessions/550e8400-e29b-41d4-a716-446655440000.md",
+  "cwd": "/tmp/test_project",
+  "tool_name": "Edit",
+  "tool_use_id": "ef3b5d72-6396-5f4d-b66g-9d4c6f0e5d3b",
+  "tool_input": {
+    "file_path": "/tmp/test_project/src/auth/token.ts",
+    "old_string": "const token = jwt.sign(payload, secret)",
+    "new_string": "const token = await generateSecureToken(payload)"
+  },
+  "tool_response": {
+    "success": true
+  }
+}

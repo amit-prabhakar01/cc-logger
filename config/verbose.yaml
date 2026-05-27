@@ -1,0 +1,13 @@
+# cc-logger · Verbose preset
+# Logs everything — all tools, full inputs, full outputs (up to 10K chars).
+# Ideal for: debugging Claude behaviour, audit trails, compliance.
+
+enabled: true
+
+filtering:
+  excludeTools: []         # capture ALL tools including Read, Glob, Grep
+  includeTools: []
+
+output:
+  maxInlineChars: 10000    # large inline window before truncation
+  minToolCallsToWrite: 1

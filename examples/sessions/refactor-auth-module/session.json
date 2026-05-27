@@ -1,0 +1,72 @@
+{
+  "schema_version": "1",
+  "session_id": "a3f9b2e1-4c8d-4e2a-b6f1-9d0e3a7c5b2f",
+  "started_at": "2026-05-24T14:30:22.000Z",
+  "working_dir": "/Users/amit/projects/api-server",
+  "tool_calls": [
+    {
+      "index": 1,
+      "timestamp": "2026-05-24T14:30:45.123Z",
+      "tool": "Bash",
+      "input": { "command": "git log --oneline -5" },
+      "response": { "exit_code": 0, "output_lines": 5 }
+    },
+    {
+      "index": 2,
+      "timestamp": "2026-05-24T14:31:02.456Z",
+      "tool": "Bash",
+      "input": { "command": "find src/auth -name '*.ts' | head -20" },
+      "response": { "exit_code": 0, "output_lines": 8 }
+    },
+    {
+      "index": 3,
+      "timestamp": "2026-05-24T14:31:18.789Z",
+      "tool": "Edit",
+      "input": { "file_path": "src/auth/token.ts" },
+      "response": {}
+    },
+    {
+      "index": 4,
+      "timestamp": "2026-05-24T14:33:45.012Z",
+      "tool": "Edit",
+      "input": { "file_path": "src/auth/middleware.ts" },
+      "response": {}
+    },
+    {
+      "index": 5,
+      "timestamp": "2026-05-24T14:38:12.345Z",
+      "tool": "Bash",
+      "input": { "command": "npx tsc --noEmit" },
+      "response": { "exit_code": 0, "output_lines": 3 }
+    },
+    {
+      "index": 6,
+      "timestamp": "2026-05-24T14:40:55.678Z",
+      "tool": "Bash",
+      "input": { "command": "npm test -- --testPathPattern=auth" },
+      "response": { "exit_code": 0, "output_lines": 12 }
+    },
+    {
+      "index": 7,
+      "timestamp": "2026-05-24T14:42:30.901Z",
+      "tool": "Bash",
+      "input": { "command": "git diff --stat HEAD" },
+      "response": { "exit_code": 0, "output_lines": 6 }
+    }
+  ],
+  "summary": {
+    "total_tool_calls": 7,
+    "files_modified": [
+      "src/auth/token.ts",
+      "src/auth/middleware.ts"
+    ],
+    "commands_run": [
+      "git log --oneline -5",
+      "find src/auth -name '*.ts' | head -20",
+      "npx tsc --noEmit",
+      "npm test -- --testPathPattern=auth",
+      "git diff --stat HEAD"
+    ],
+    "estimated_cost_usd": 0.032
+  }
+}

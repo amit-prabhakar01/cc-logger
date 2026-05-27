@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Tests · Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.8", "3.10", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install test dependencies
+        run: pip install pytest
+
+      - name: Run tests
+        run: python -m pytest tests/ -v
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Lint hook script
+        run: ruff check .claude/hooks/log_session.py
+
+      - name: Check syntax (fallback)
+        run: python3 -m py_compile .claude/hooks/log_session.py && echo "Syntax OK"
+
+  install-test:
+    name: install.sh smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run install script in temp directory
+        run: |
+          mkdir -p /tmp/test-project && cd /tmp/test-project
+          bash $GITHUB_WORKSPACE/install.sh
+          test -f .claude/hooks/log_session.py && echo "Hook script present"
+          test -f .claude/settings.json && echo "settings.json present"
+          test -f .claude-logger.json && echo ".claude-logger.json present"
+          python3 -c "import json; json.load(open('.claude/settings.json'))" && echo "settings.json is valid JSON"

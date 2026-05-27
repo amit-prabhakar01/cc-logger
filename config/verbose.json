@@ -1,0 +1,12 @@
+{
+  "_comment": "cc-logger · Verbose preset — logs everything including Read, Glob, Grep with large inline window. Ideal for debugging Claude behaviour, audit trails, compliance.",
+  "enabled": true,
+  "filtering": {
+    "excludeTools": [],
+    "includeTools": []
+  },
+  "output": {
+    "maxInlineChars": 10000,
+    "minToolCallsToWrite": 1
+  }
+}

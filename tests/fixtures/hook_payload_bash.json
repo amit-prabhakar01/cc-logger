@@ -1,0 +1,16 @@
+{
+  "hook_event_name": "PostToolUse",
+  "session_id": "550e8400-e29b-41d4-a716-446655440000",
+  "transcript_path": "/tmp/test_project/.claude/sessions/550e8400-e29b-41d4-a716-446655440000.md",
+  "cwd": "/tmp/test_project",
+  "tool_name": "Bash",
+  "tool_use_id": "cd2a6f31-4285-4e3c-a55f-8c3b5e9d4c2a",
+  "tool_input": {
+    "command": "git log --oneline -5"
+  },
+  "tool_response": {
+    "output": "abc1234 feat: add session logger\ndef5678 fix: handle large outputs\nghi9012 test: add unit tests\njkl3456 docs: update README\nmno7890 chore: initial commit",
+    "error": null,
+    "exit_code": 0
+  }
+}

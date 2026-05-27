@@ -1,0 +1,17 @@
+# cc-logger · Minimal preset
+# Logs only tool name, timestamp, and status. No input/output content.
+# Ideal for: high-volume sessions where you just want a timeline.
+
+enabled: true
+
+filtering:
+  excludeTools:
+    - Read
+    - Glob
+    - Grep
+    - Bash          # exclude commands too for minimal mode
+  includeTools: []
+
+output:
+  maxInlineChars: 0        # headings only — no inline content
+  minToolCallsToWrite: 3

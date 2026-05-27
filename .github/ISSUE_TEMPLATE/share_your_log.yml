@@ -1,0 +1,34 @@
+name: Share Your Session Log
+description: Show the community what cc-logger captured in your workflow
+labels: ["community", "showcase"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## Share a session log!
+        Paste a redacted excerpt from one of your session logs. 
+        Great for inspiring others and showing real-world use cases.
+
+  - type: input
+    id: use-case
+    attributes:
+      label: What were you working on?
+      placeholder: "e.g. Refactoring auth module, debugging API timeout, adding tests"
+    validations:
+      required: true
+
+  - type: textarea
+    id: log-excerpt
+    attributes:
+      label: Session log excerpt (redact any sensitive info)
+      description: Paste a portion of your session.md here
+      render: markdown
+    validations:
+      required: true
+
+  - type: textarea
+    id: insight
+    attributes:
+      label: What did you find useful or surprising in the log?
+    validations:
+      required: false

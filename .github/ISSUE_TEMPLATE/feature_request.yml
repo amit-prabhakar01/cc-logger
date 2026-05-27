@@ -1,0 +1,31 @@
+name: Feature Request
+description: Suggest a new feature or improvement
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: What frustration or gap in cc-logger does this address?
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: What would you like to see? Be as specific as possible.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: tier
+    attributes:
+      label: Which feature tier does this fit?
+      options:
+        - "Core (v1.0 — essential)"
+        - "High value (v1.1–v1.2)"
+        - "Platform / roadmap (v2+)"
+        - "Not sure"
+    validations:
+      required: true

@@ -1,0 +1,14 @@
+{
+  "_comment": "cc-logger configuration · https://github.com/amit-prabhakar01/cc-logger",
+  "enabled": true,
+
+  "filtering": {
+    "excludeTools": ["Read", "Glob", "Grep"],
+    "includeTools": []
+  },
+
+  "output": {
+    "maxInlineChars": 3000,
+    "minToolCallsToWrite": 1
+  }
+}

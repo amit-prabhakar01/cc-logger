@@ -1,0 +1,55 @@
+{
+  "schema_version": "1",
+  "session_id": "b7c4d3e2-5f9a-4b1c-a8e2-1d2f3a4b5c6d",
+  "started_at": "2026-05-23T09:15:08.000Z",
+  "working_dir": "/Users/amit/projects/payment-service",
+  "tool_calls": [
+    {
+      "index": 1,
+      "timestamp": "2026-05-23T09:15:22.123Z",
+      "tool": "Grep",
+      "input": { "pattern": "timeout", "path": "src/" },
+      "response": { "output_lines": 11 }
+    },
+    {
+      "index": 2,
+      "timestamp": "2026-05-23T09:17:40.456Z",
+      "tool": "Bash",
+      "input": { "command": "grep -r \"ECONNRESET|ETIMEDOUT\" logs/production/ | tail -20" },
+      "response": { "exit_code": 0, "output_lines": 20 }
+    },
+    {
+      "index": 3,
+      "timestamp": "2026-05-23T09:22:05.789Z",
+      "tool": "Edit",
+      "input": { "file_path": "src/services/payment.ts" },
+      "response": {}
+    },
+    {
+      "index": 4,
+      "timestamp": "2026-05-23T09:24:18.012Z",
+      "tool": "Edit",
+      "input": { "file_path": "src/middleware/retry.ts" },
+      "response": {}
+    },
+    {
+      "index": 5,
+      "timestamp": "2026-05-23T09:28:33.345Z",
+      "tool": "Bash",
+      "input": { "command": "npm test -- --testPathPattern=payment" },
+      "response": { "exit_code": 0, "output_lines": 15 }
+    }
+  ],
+  "summary": {
+    "total_tool_calls": 5,
+    "files_modified": [
+      "src/services/payment.ts",
+      "src/middleware/retry.ts"
+    ],
+    "commands_run": [
+      "grep -r \"ECONNRESET|ETIMEDOUT\" logs/production/ | tail -20",
+      "npm test -- --testPathPattern=payment"
+    ],
+    "estimated_cost_usd": 0.019
+  }
+}
