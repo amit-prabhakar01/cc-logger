@@ -694,5 +694,280 @@ class TestTranscriptRecovery(unittest.TestCase):
             self.assertEqual(names, ["Edit"])
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+class TestGlobalMode(unittest.TestCase):
+    """Global install: is_global_mode(), get_central_log_dir(), get_project_folder_name(),
+    update_project_index(), load_config_global(), and end-to-end log routing."""
+
+    # ── is_global_mode ────────────────────────────────────────────────────────
+
+    def test_is_global_mode_false_for_project_install(self):
+        """When log_session.py is in a project's .claude/hooks/, is_global_mode() is False."""
+        # The test module imports log_session from the project's hook dir, not ~/.claude/hooks
+        self.assertFalse(ls.is_global_mode())
+
+    def test_is_global_mode_true_when_script_in_home_claude_hooks(self):
+        """Simulate the script living in ~/.claude/hooks/."""
+        fake_script = Path.home() / ".claude" / "hooks" / "log_session.py"
+        with patch.object(ls, "__file__", str(fake_script)):
+            result = ls.is_global_mode()
+        self.assertTrue(result)
+
+    def test_is_global_mode_false_for_arbitrary_path(self):
+        """Any path outside ~/.claude/hooks/ returns False."""
+        with patch.object(ls, "__file__", "/some/random/path/log_session.py"):
+            result = ls.is_global_mode()
+        self.assertFalse(result)
+
+    # ── get_central_log_dir ───────────────────────────────────────────────────
+
+    def test_central_log_dir_default_posix(self):
+        """On non-Windows, default central dir is ~/.cc-logger."""
+        with patch("platform.system", return_value="Linux"):
+            with tempfile.TemporaryDirectory() as d:
+                cfg = {}
+                result = ls.get_central_log_dir(cfg)
+        self.assertEqual(result, Path.home() / ".cc-logger")
+
+    def test_central_log_dir_default_macos(self):
+        """On macOS, default central dir is ~/.cc-logger."""
+        with patch("platform.system", return_value="Darwin"):
+            cfg = {}
+            result = ls.get_central_log_dir(cfg)
+        self.assertEqual(result, Path.home() / ".cc-logger")
+
+    def test_central_log_dir_custom_override(self):
+        """centralLogDir in config overrides the default."""
+        with tempfile.TemporaryDirectory() as d:
+            cfg = {"centralLogDir": d}
+            result = ls.get_central_log_dir(cfg)
+            self.assertEqual(result.resolve(), Path(d).resolve())
+            self.assertTrue(result.exists())
+
+    def test_central_log_dir_custom_created_if_missing(self):
+        """The custom centralLogDir is created when it doesn't exist."""
+        with tempfile.TemporaryDirectory() as base:
+            target = Path(base) / "new" / "nested" / "dir"
+            cfg = {"centralLogDir": str(target)}
+            result = ls.get_central_log_dir(cfg)
+            self.assertTrue(result.exists())
+
+    def test_central_log_dir_windows(self):
+        """On Windows, default central dir uses USERPROFILE."""
+        fake_home = Path.home()
+        with patch("platform.system", return_value="Windows"):
+            with patch.dict(os.environ, {"USERPROFILE": str(fake_home)}):
+                cfg = {}
+                result = ls.get_central_log_dir(cfg)
+        self.assertEqual(result, fake_home / ".cc-logger")
+
+    # ── get_project_folder_name ───────────────────────────────────────────────
+
+    def test_project_folder_name_format(self):
+        """Result must match <safe_name>_<8hexchars>."""
+        import re
+        name = ls.get_project_folder_name("/Users/amit/projects/api-server")
+        self.assertRegex(name, r"^[\w\-]+_[0-9a-f]{8}$")
+
+    def test_project_folder_name_different_paths_differ(self):
+        """Two different paths produce different folder names."""
+        n1 = ls.get_project_folder_name("/Users/amit/projects/api-server")
+        n2 = ls.get_project_folder_name("/Users/amit/projects/frontend-app")
+        self.assertNotEqual(n1, n2)
+
+    def test_project_folder_name_same_dirname_different_parent(self):
+        """Projects with identical dir names but different parents must differ."""
+        n1 = ls.get_project_folder_name("/Users/amit/work/api-server")
+        n2 = ls.get_project_folder_name("/Users/bob/personal/api-server")
+        # The human-readable prefix may be the same; the hash MUST differ
+        hash1 = n1.rsplit("_", 1)[-1]
+        hash2 = n2.rsplit("_", 1)[-1]
+        self.assertNotEqual(hash1, hash2)
+
+    def test_project_folder_name_stable(self):
+        """Same path always produces the same folder name."""
+        path = "/Users/amit/projects/stable-project"
+        self.assertEqual(
+            ls.get_project_folder_name(path),
+            ls.get_project_folder_name(path),
+        )
+
+    def test_project_folder_name_sanitises_special_chars(self):
+        """Special characters in dir name are replaced with underscores."""
+        name = ls.get_project_folder_name("/Users/amit/my project (v2)!")
+        prefix = name.rsplit("_", 1)[0]
+        self.assertNotIn(" ", prefix)
+        self.assertNotIn("(", prefix)
+        self.assertNotIn(")", prefix)
+
+    # ── update_project_index ──────────────────────────────────────────────────
+
+    def test_update_project_index_creates_index(self):
+        """Index file is created when it does not exist."""
+        with tempfile.TemporaryDirectory() as d:
+            central = Path(d)
+            ls.update_project_index(central, "api-server_a3f9b2e1", "/Users/amit/projects/api-server")
+            index_file = central / "cc-logger-index.json"
+            self.assertTrue(index_file.exists())
+            data = json.loads(index_file.read_text())
+            self.assertIn("api-server_a3f9b2e1", data)
+
+    def test_update_project_index_stores_path_and_name(self):
+        """Index entry has path, name, and last_seen fields."""
+        with tempfile.TemporaryDirectory() as d:
+            central = Path(d)
+            cwd = "/Users/amit/projects/api-server"
+            ls.update_project_index(central, "api-server_a3f9b2e1", cwd)
+            data = json.loads((central / "cc-logger-index.json").read_text())
+            entry = data["api-server_a3f9b2e1"]
+            self.assertIn("path",      entry)
+            self.assertIn("name",      entry)
+            self.assertIn("last_seen", entry)
+            self.assertEqual(entry["name"], "api-server")
+
+    def test_update_project_index_updates_existing_entry(self):
+        """Calling update twice updates the last_seen timestamp."""
+        with tempfile.TemporaryDirectory() as d:
+            central = Path(d)
+            cwd     = "/Users/amit/projects/api-server"
+            ls.update_project_index(central, "api-server_abc12345", cwd)
+            first_ts = json.loads((central / "cc-logger-index.json").read_text())["api-server_abc12345"]["last_seen"]
+
+            time.sleep(0.02)
+            ls.update_project_index(central, "api-server_abc12345", cwd)
+            second_ts = json.loads((central / "cc-logger-index.json").read_text())["api-server_abc12345"]["last_seen"]
+
+            self.assertGreaterEqual(second_ts, first_ts)
+
+    def test_update_project_index_multiple_projects(self):
+        """Multiple projects coexist in the same index file."""
+        with tempfile.TemporaryDirectory() as d:
+            central = Path(d)
+            ls.update_project_index(central, "proj-a_11111111", "/work/proj-a")
+            ls.update_project_index(central, "proj-b_22222222", "/work/proj-b")
+            data = json.loads((central / "cc-logger-index.json").read_text())
+            self.assertIn("proj-a_11111111", data)
+            self.assertIn("proj-b_22222222", data)
+
+    # ── load_config_global ────────────────────────────────────────────────────
+
+    def test_load_config_global_returns_defaults_when_no_files(self):
+        """With no config files anywhere, returns built-in defaults."""
+        with tempfile.TemporaryDirectory() as cwd:
+            with tempfile.TemporaryDirectory() as fake_home:
+                with patch("pathlib.Path.home", return_value=Path(fake_home)):
+                    cfg = ls.load_config_global(cwd)
+        self.assertTrue(cfg["enabled"])
+        self.assertIn("Read",  cfg["excludeTools"])
+        self.assertEqual(cfg["maxInlineChars"], ls.DEFAULT_MAX_INLINE_CHARS)
+
+    def test_load_config_global_reads_global_config(self):
+        """~/.claude-logger.json is applied on top of defaults."""
+        with tempfile.TemporaryDirectory() as fake_home:
+            global_cfg = Path(fake_home) / ".claude-logger.json"
+            global_cfg.write_text(json.dumps({
+                "filtering": {"excludeTools": ["Bash"], "includeTools": []},
+                "output":    {"maxInlineChars": 500}
+            }))
+            with tempfile.TemporaryDirectory() as cwd:
+                with patch("pathlib.Path.home", return_value=Path(fake_home)):
+                    cfg = ls.load_config_global(cwd)
+        self.assertIn("Bash", cfg["excludeTools"])
+        self.assertNotIn("Read", cfg["excludeTools"])   # override replaced defaults
+        self.assertEqual(cfg["maxInlineChars"], 500)
+
+    def test_load_config_global_project_overrides_global(self):
+        """<project>/.claude-logger.json overrides ~/.claude-logger.json."""
+        with tempfile.TemporaryDirectory() as fake_home:
+            global_cfg = Path(fake_home) / ".claude-logger.json"
+            global_cfg.write_text(json.dumps({"output": {"maxInlineChars": 500}}))
+
+            with tempfile.TemporaryDirectory() as cwd:
+                project_cfg = Path(cwd) / ".claude-logger.json"
+                project_cfg.write_text(json.dumps({"output": {"maxInlineChars": 9999}}))
+
+                with patch("pathlib.Path.home", return_value=Path(fake_home)):
+                    cfg = ls.load_config_global(cwd)
+
+        self.assertEqual(cfg["maxInlineChars"], 9999)
+
+    def test_load_config_global_project_only_config(self):
+        """Per-project config is applied even when no global config exists."""
+        with tempfile.TemporaryDirectory() as fake_home:
+            with tempfile.TemporaryDirectory() as cwd:
+                project_cfg = Path(cwd) / ".claude-logger.json"
+                project_cfg.write_text(json.dumps({"enabled": False}))
+
+                with patch("pathlib.Path.home", return_value=Path(fake_home)):
+                    cfg = ls.load_config_global(cwd)
+
+        self.assertFalse(cfg["enabled"])
+
+    def test_load_config_global_malformed_global_falls_back(self):
+        """Malformed global config is skipped; defaults are used."""
+        with tempfile.TemporaryDirectory() as fake_home:
+            (Path(fake_home) / ".claude-logger.json").write_text("NOT JSON {{{{")
+            with tempfile.TemporaryDirectory() as cwd:
+                with patch("pathlib.Path.home", return_value=Path(fake_home)):
+                    cfg = ls.load_config_global(cwd)
+        self.assertTrue(cfg["enabled"])   # defaults intact
+
+    # ── End-to-end: global mode log routing ───────────────────────────────────
+
+    def test_global_mode_logs_to_central_dir(self):
+        """In global mode, logs land in central_dir/<project_folder>/ not ./logs/."""
+        with tempfile.TemporaryDirectory() as project_dir:
+            with tempfile.TemporaryDirectory() as central_dir:
+                with tempfile.TemporaryDirectory() as fake_home:
+                    # Write global config pointing to our temp central_dir
+                    (Path(fake_home) / ".claude-logger.json").write_text(
+                        json.dumps({"centralLogDir": central_dir, "filtering": {"excludeTools": [], "includeTools": []}})
+                    )
+
+                    sessions_dir = Path(project_dir) / ".claude" / "sessions"
+                    sessions_dir.mkdir(parents=True)
+                    (sessions_dir / "s.md").touch()
+                    sid = "global-e2e-test-0000-000000000001"
+                    payload = {
+                        "hook_event_name": "PostToolUse",
+                        "session_id":      sid,
+                        "transcript_path": str(sessions_dir / "s.md"),
+                        "cwd":             project_dir,
+                        "tool_name":       "Bash",
+                        "tool_use_id":     "u1",
+                        "tool_input":      {"command": "git status"},
+                        "tool_response":   {"output": "clean", "exit_code": 0},
+                    }
+
+                    with patch("pathlib.Path.home", return_value=Path(fake_home)):
+                        config         = ls.load_config_global(project_dir)
+                        project_folder = ls.get_project_folder_name(project_dir)
+                        logs_root      = Path(central_dir) / project_folder
+
+                        ls.update_project_index(Path(central_dir), project_folder, project_dir)
+                        session_dir = ls.get_or_create_session_dir(logs_root, sid)
+                        idx         = ls.get_and_increment_call_index(session_dir)
+                        ls.write_markdown_entry(session_dir, payload, idx, config)
+                        ls.append_json_entry(session_dir, payload, idx, config)
+
+                    # Log must be inside central_dir, NOT inside project_dir/logs/
+                    self.assertTrue((session_dir / "session.md").exists())
+                    self.assertTrue((session_dir / "session.json").exists())
+                    self.assertTrue(str(session_dir).startswith(central_dir))
+                    self.assertFalse((Path(project_dir) / "logs").exists(),
+                                     "Project-local logs/ must NOT be created in global mode")
+
+    def test_global_mode_index_updated_after_session(self):
+        """After a global-mode session, cc-logger-index.json records the project."""
+        with tempfile.TemporaryDirectory() as project_dir:
+            with tempfile.TemporaryDirectory() as central_dir:
+                project_folder = ls.get_project_folder_name(project_dir)
+                ls.update_project_index(Path(central_dir), project_folder, project_dir)
+
+                index = json.loads((Path(central_dir) / "cc-logger-index.json").read_text())
+                self.assertIn(project_folder, index)
+                self.assertEqual(index[project_folder]["name"], Path(project_dir).name)
+
+
 if __name__ == "__main__":
     unittest.main()

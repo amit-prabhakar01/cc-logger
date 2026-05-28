@@ -15,6 +15,7 @@ Python 3.8+ compatible · MIT License · https://github.com/amit-prabhakar01/cc-
 import hashlib
 import json
 import os
+import platform
 import re
 import subprocess
 import sys
@@ -29,6 +30,9 @@ from typing import Any, Dict, List, Optional, Tuple
 CONFIG_FILENAME   = ".claude-logger.json"
 LOG_DIR_NAME      = "logs"
 SCHEMA_VERSION    = "1"
+
+# Global-install detection — script lives in ~/.claude/hooks/ when global
+GLOBAL_HOOKS_SUBDIR = Path(".claude") / "hooks"
 DEFAULT_MAX_INLINE_CHARS = 3000
 DEFAULT_MIN_TOOL_CALLS   = 1
 
@@ -133,23 +137,130 @@ def load_config(project_root: Path) -> Dict[str, Any]:
 
     defaults.update(user_config)
 
-    # Flatten nested "filtering" and "output" blocks so both config shapes work
-    if "filtering" in defaults and isinstance(defaults["filtering"], dict):
-        filt = defaults["filtering"]
-        if "excludeTools" in filt:
-            defaults["excludeTools"] = filt["excludeTools"]
-        if "includeTools" in filt:
-            defaults["includeTools"] = filt["includeTools"]
-
-    if "output" in defaults and isinstance(defaults["output"], dict):
-        out = defaults["output"]
-        if "maxInlineChars" in out:
-            defaults["maxInlineChars"] = out["maxInlineChars"]
-        if "minToolCallsToWrite" in out:
-            defaults["minToolCallsToWrite"] = out["minToolCallsToWrite"]
-
+    _flatten_config(defaults)
     return defaults
 
+
+
+def _flatten_config(cfg: Dict[str, Any]) -> None:
+    """Flatten nested filtering/output blocks into top-level keys (in-place)."""
+    if "filtering" in cfg and isinstance(cfg["filtering"], dict):
+        filt = cfg["filtering"]
+        if "excludeTools" in filt:
+            cfg["excludeTools"] = filt["excludeTools"]
+        if "includeTools" in filt:
+            cfg["includeTools"] = filt["includeTools"]
+    if "output" in cfg and isinstance(cfg["output"], dict):
+        out = cfg["output"]
+        if "maxInlineChars" in out:
+            cfg["maxInlineChars"] = out["maxInlineChars"]
+        if "minToolCallsToWrite" in out:
+            cfg["minToolCallsToWrite"] = out["minToolCallsToWrite"]
+
+
+def is_global_mode() -> bool:
+    """True when the hook script lives in ~/.claude/hooks/ (global install)."""
+    try:
+        script = Path(__file__).resolve()
+        return script.parent == Path.home() / ".claude" / "hooks"
+    except Exception:
+        return False
+
+
+def get_central_log_dir(config: Dict[str, Any]) -> Path:
+    """
+    Return the central log root, cross-platform.
+
+    Priority:
+      1. config["centralLogDir"]   — explicit user override
+      2. Windows: %USERPROFILE%\.cc-logger
+      3. macOS / Linux: ~/.cc-logger
+    """
+    if "centralLogDir" in config:
+        p = Path(config["centralLogDir"]).expanduser()
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+
+    home = Path.home()
+    if platform.system() == "Windows":
+        # Prefer USERPROFILE; fall back to home
+        base = Path(os.environ.get("USERPROFILE", str(home)))
+        return base / ".cc-logger"
+    return home / ".cc-logger"
+
+
+def get_project_folder_name(cwd: str) -> str:
+    """
+    Derive a stable, human-readable project folder name from the working dir.
+    Format: <sanitised-dir-name>_<md5hash8>
+    The hash of the resolved absolute path prevents collisions between
+    projects with identical directory names.
+    """
+    p = Path(cwd)
+    try:
+        resolved = str(p.resolve())
+    except Exception:
+        resolved = str(p)
+    safe_name = re.sub(r"[^\w\-]", "_", p.name)[:40]
+    path_hash = hashlib.md5(resolved.encode()).hexdigest()[:8]
+    return f"{safe_name}_{path_hash}"
+
+
+def update_project_index(central_dir: Path, project_folder: str, cwd: str) -> None:
+    """
+    Maintain ~/.cc-logger/cc-logger-index.json mapping folder names → paths.
+    Used so humans can trace which folder belongs to which project.
+    """
+    index_file = central_dir / "cc-logger-index.json"
+    index: Dict[str, Any] = {}
+    try:
+        if index_file.exists():
+            index = json.loads(index_file.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    index[project_folder] = {
+        "path":      str(Path(cwd).resolve()),
+        "name":      Path(cwd).name,
+        "last_seen": datetime.now(tz=timezone.utc).isoformat(),
+    }
+    try:
+        central_dir.mkdir(parents=True, exist_ok=True)
+        index_file.write_text(json.dumps(index, indent=2, default=str), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def load_config_global(cwd: str) -> Dict[str, Any]:
+    """
+    Config hierarchy for global-mode installs:
+      1. Built-in defaults
+      2. ~/.claude-logger.json          — machine-wide settings
+      3. <project_root>/.claude-logger.json — per-project overrides
+    Both files are optional; missing files are silently skipped.
+    """
+    defaults: Dict[str, Any] = {
+        "enabled":             True,
+        "excludeTools":        DEFAULT_EXCLUDE_TOOLS[:],
+        "includeTools":        [],
+        "maxInlineChars":      DEFAULT_MAX_INLINE_CHARS,
+        "minToolCallsToWrite": DEFAULT_MIN_TOOL_CALLS,
+    }
+
+    def _merge(path: Path) -> None:
+        if not path.exists():
+            return
+        try:
+            cfg = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            print(f"cc-logger: cannot read {path}: {exc}", file=sys.stderr)
+            return
+        _flatten_config(cfg)
+        defaults.update({k: v for k, v in cfg.items()
+                         if not k.startswith("_")})
+
+    _merge(Path.home() / CONFIG_FILENAME)          # global
+    _merge(Path(cwd) / CONFIG_FILENAME)            # project override
+    return defaults
 
 # ---------------------------------------------------------------------------
 # Path resolution
@@ -661,13 +772,29 @@ def main() -> None:
         sys.exit(0)
 
     try:
-        project_root = resolve_project_root(transcript_path)
-        config       = load_config(project_root)
+        # ── Route: global install vs project-level install ──────────────────
+        global_mode = is_global_mode()
+
+        if global_mode:
+            cwd    = payload.get("cwd", "")
+            config = load_config_global(cwd)
+        else:
+            project_root = resolve_project_root(transcript_path)
+            config       = load_config(project_root)
+            cwd          = payload.get("cwd", str(project_root))
 
         if not config.get("enabled", True):
             sys.exit(0)
 
-        logs_root   = project_root / LOG_DIR_NAME
+        if global_mode:
+            # Central log: ~/.cc-logger/<project-name_hash>/<session>/
+            central_dir    = get_central_log_dir(config)
+            project_folder = get_project_folder_name(cwd)
+            logs_root      = central_dir / project_folder
+            update_project_index(central_dir, project_folder, cwd)
+        else:
+            logs_root = project_root / LOG_DIR_NAME
+
         session_dir = get_or_create_session_dir(logs_root, session_id)
 
         # P1: Stop event → write session summary and exit

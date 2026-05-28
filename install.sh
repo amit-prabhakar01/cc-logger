@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # cc-logger installer · https://github.com/amit-prabhakar01/cc-logger
 # Idempotent: safe to run multiple times. Merges into existing settings.json.
+#
+# Usage:
+#   bash install.sh           — project-level install (current directory)
+#   bash install.sh --global  — machine-wide install (all projects, all IDEs)
+#
 set -euo pipefail
 
 REPO_URL="https://raw.githubusercontent.com/amit-prabhakar01/cc-logger/main"
@@ -13,17 +18,29 @@ ok()   { echo -e "${GREEN}  ✓${NC} $1"; }
 warn() { echo -e "${YELLOW}  ⚠${NC}  $1"; }
 fail() { echo -e "${RED}  ✗${NC} $1"; exit 1; }
 
+# ── Parse arguments ──────────────────────────────────────────────────────────
+GLOBAL=false
+for arg in "$@"; do
+  case $arg in
+    --global|-g) GLOBAL=true ;;
+  esac
+done
+
 echo ""
 echo "  cc-logger · Claude Code Session Logger"
 echo "  ----------------------------------------"
+if [ "$GLOBAL" = true ]; then
+  echo "  Mode: GLOBAL (logs all Claude Code sessions on this machine)"
+else
+  echo "  Mode: PROJECT (logs sessions in this project only)"
+fi
 echo ""
 
-# --- Check Python 3.8+ ---
-PYTHON=$(command -v python3 || command -v python || true)
+# ── Detect Python 3.8+ ───────────────────────────────────────────────────────
+PYTHON=$(command -v python3 2>/dev/null || command -v python 2>/dev/null || true)
 if [ -z "$PYTHON" ]; then
   fail "Python 3.8+ is required but not found. Install Python and retry."
 fi
-
 PY_VERSION=$($PYTHON -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
 PY_MAJOR=$($PYTHON -c "import sys; print(sys.version_info.major)")
 PY_MINOR=$($PYTHON -c "import sys; print(sys.version_info.minor)")
@@ -32,111 +49,124 @@ if [ "$PY_MAJOR" -lt 3 ] || { [ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -lt 8 ]; };
 fi
 ok "Python $PY_VERSION found"
 
-# --- Create .claude/hooks/ directory ---
-mkdir -p .claude/hooks
-ok ".claude/hooks/ ready"
-
-# --- Download or copy hook script ---
-HOOK_SRC=""
+# ── Resolve paths based on mode ──────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+if [ "$GLOBAL" = true ]; then
+  HOOKS_DIR="$HOME/.claude/hooks"
+  SETTINGS_FILE="$HOME/.claude/settings.json"
+  CONFIG_FILE="$HOME/.claude-logger.json"
+  # Use the resolved Python binary path so the hook works from any shell
+  PYTHON_BIN="$(command -v python3 2>/dev/null || command -v python)"
+  HOOK_CMD="${PYTHON_BIN} ${HOOKS_DIR}/log_session.py"
+else
+  HOOKS_DIR=".claude/hooks"
+  SETTINGS_FILE=".claude/settings.json"
+  CONFIG_FILE=".claude-logger.json"
+  HOOK_CMD="python3 \${CLAUDE_PROJECT_DIR}/.claude/hooks/log_session.py"
+fi
+
+# ── Install hook script ───────────────────────────────────────────────────────
+mkdir -p "$HOOKS_DIR"
+ok "${HOOKS_DIR}/ ready"
+
 if [ -f "$SCRIPT_DIR/.claude/hooks/log_session.py" ]; then
-  # Local install (running from cloned repo)
-  cp "$SCRIPT_DIR/.claude/hooks/log_session.py" .claude/hooks/log_session.py
+  cp "$SCRIPT_DIR/.claude/hooks/log_session.py" "${HOOKS_DIR}/log_session.py"
   ok "Hook script copied from local repo"
 elif command -v curl >/dev/null 2>&1; then
-  curl -fsSL "$REPO_URL/.claude/hooks/log_session.py" -o .claude/hooks/log_session.py
+  curl -fsSL "$REPO_URL/.claude/hooks/log_session.py" -o "${HOOKS_DIR}/log_session.py"
   ok "Hook script downloaded"
 elif command -v wget >/dev/null 2>&1; then
-  wget -q "$REPO_URL/.claude/hooks/log_session.py" -O .claude/hooks/log_session.py
+  wget -q "$REPO_URL/.claude/hooks/log_session.py" -O "${HOOKS_DIR}/log_session.py"
   ok "Hook script downloaded"
 else
   fail "curl or wget required to download the hook script."
 fi
-chmod +x .claude/hooks/log_session.py
+chmod +x "${HOOKS_DIR}/log_session.py"
 
-# --- Merge hook into .claude/settings.json ---
-SETTINGS_FILE=".claude/settings.json"
-CC_LOGGER_HOOK='{"type":"command","command":"python3 ${CLAUDE_PROJECT_DIR}/.claude/hooks/log_session.py"}'
-
+# ── Merge hooks into settings.json ────────────────────────────────────────────
 if [ -f "$SETTINGS_FILE" ]; then
-  # Back up existing settings
   cp "$SETTINGS_FILE" "${SETTINGS_FILE}.bak"
   ok "Backed up existing settings.json → settings.json.bak"
 
-  # Check if hook is already registered
   if grep -q "log_session.py" "$SETTINGS_FILE" 2>/dev/null; then
     ok "Hook already registered in settings.json (skipping)"
   else
-    # Use Python to safely merge (handles comments, preserves existing hooks)
-    $PYTHON - <<PYEOF
+    $PYTHON - << PYEOF
 import json, sys
 
 with open("$SETTINGS_FILE", "r") as f:
     settings = json.load(f)
 
 settings.setdefault("hooks", {})
+
+hook_cmd = "$HOOK_CMD"
+
+# PostToolUse
 settings["hooks"].setdefault("PostToolUse", [])
+existing = [e.get("matcher") for e in settings["hooks"]["PostToolUse"]]
+if "*" not in existing:
+    settings["hooks"]["PostToolUse"].append({
+        "matcher": "*",
+        "hooks": [{"type": "command", "command": hook_cmd}]
+    })
 
-new_entry = {
-    "matcher": "*",
-    "hooks": [{"type": "command", "command": "python3 \${CLAUDE_PROJECT_DIR}/.claude/hooks/log_session.py"}]
-}
-
-# Avoid duplicate matchers
-existing_matchers = [e.get("matcher") for e in settings["hooks"]["PostToolUse"]]
-if "*" not in existing_matchers:
-    settings["hooks"]["PostToolUse"].append(new_entry)
+# Stop
+settings["hooks"].setdefault("Stop", [])
+stop_cmds = [
+    h.get("command","")
+    for e in settings["hooks"]["Stop"]
+    for h in e.get("hooks",[])
+]
+if hook_cmd not in stop_cmds:
+    settings["hooks"]["Stop"].append({
+        "hooks": [{"type": "command", "command": hook_cmd}]
+    })
 
 with open("$SETTINGS_FILE", "w") as f:
     json.dump(settings, f, indent=2)
     f.write("\n")
 PYEOF
-    ok "Hook merged into existing settings.json"
+    ok "Hooks merged into existing settings.json"
   fi
 else
-  # Create fresh settings.json
-  cat > "$SETTINGS_FILE" << 'JSON'
-{
-  "$schema": "https://json.schemastore.org/claude-code-settings.json",
-  "hooks": {
-    "PostToolUse": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 ${CLAUDE_PROJECT_DIR}/.claude/hooks/log_session.py"
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 ${CLAUDE_PROJECT_DIR}/.claude/hooks/log_session.py"
-          }
-        ]
-      }
-    ]
-  }
+  # Fresh settings.json — write directly using Python so path interpolation is safe
+  $PYTHON - << PYEOF
+import json
+
+hook_cmd = "$HOOK_CMD"
+settings = {
+    "\$schema": "https://json.schemastore.org/claude-code-settings.json",
+    "hooks": {
+        "PostToolUse": [{
+            "matcher": "*",
+            "hooks": [{"type": "command", "command": hook_cmd}]
+        }],
+        "Stop": [{
+            "hooks": [{"type": "command", "command": hook_cmd}]
+        }]
+    }
 }
-JSON
-  ok "Created .claude/settings.json"
+with open("$SETTINGS_FILE", "w") as f:
+    json.dump(settings, f, indent=2)
+    f.write("\n")
+PYEOF
+  ok "Created $SETTINGS_FILE"
 fi
 
-# --- Write default config if not present ---
-if [ ! -f ".claude-logger.json" ]; then
-  if [ -f "$SCRIPT_DIR/.claude-logger.json" ]; then
-    cp "$SCRIPT_DIR/.claude-logger.json" .claude-logger.json
+# ── Write config file ─────────────────────────────────────────────────────────
+if [ ! -f "$CONFIG_FILE" ]; then
+  if [ "$GLOBAL" = true ] && [ -f "$SCRIPT_DIR/.claude-logger.json" ]; then
+    cp "$SCRIPT_DIR/.claude-logger.json" "$CONFIG_FILE"
+  elif [ "$GLOBAL" = false ] && [ -f "$SCRIPT_DIR/.claude-logger.json" ]; then
+    cp "$SCRIPT_DIR/.claude-logger.json" "$CONFIG_FILE"
   else
-    cat > .claude-logger.json << 'JSON'
+    cat > "$CONFIG_FILE" << 'JSON'
 {
+  "_comment": "cc-logger config — edit to customise. Project .claude-logger.json overrides this.",
   "enabled": true,
   "filtering": {
-    "excludeTools": ["Read", "Glob"],
+    "excludeTools": ["Read", "Glob", "Grep"],
     "includeTools": []
   },
   "output": {
@@ -146,48 +176,48 @@ if [ ! -f ".claude-logger.json" ]; then
 }
 JSON
   fi
-  ok "Created .claude-logger.json (edit to customize)"
+  ok "Created $CONFIG_FILE"
 else
-  ok ".claude-logger.json already present (skipping)"
+  ok "$CONFIG_FILE already present (skipping)"
 fi
 
-# --- Update .gitignore ---
-GITIGNORE=".gitignore"
-if [ -f "$GITIGNORE" ]; then
-  if ! grep -q "^logs/" "$GITIGNORE" 2>/dev/null; then
-    echo "" >> "$GITIGNORE"
-    echo "# cc-logger session logs" >> "$GITIGNORE"
-    echo "logs/" >> "$GITIGNORE"
-    echo "!logs/.gitkeep" >> "$GITIGNORE"
-    ok "Added logs/ to .gitignore"
+# ── Project-level extras (gitignore, logs dir) ────────────────────────────────
+if [ "$GLOBAL" = false ]; then
+  GITIGNORE=".gitignore"
+  if [ -f "$GITIGNORE" ]; then
+    if ! grep -q "^logs/" "$GITIGNORE" 2>/dev/null; then
+      printf "\n# cc-logger session logs\nlogs/\n!logs/.gitkeep\n" >> "$GITIGNORE"
+      ok "Added logs/ to .gitignore"
+    else
+      ok "logs/ already in .gitignore"
+    fi
   else
-    ok "logs/ already in .gitignore"
+    printf "# cc-logger session logs\nlogs/\n!logs/.gitkeep\n" > "$GITIGNORE"
+    ok "Created .gitignore with logs/ exclusion"
   fi
-else
-  printf "# cc-logger session logs\nlogs/\n!logs/.gitkeep\n" > "$GITIGNORE"
-  ok "Created .gitignore with logs/ exclusion"
+  mkdir -p logs && touch logs/.gitkeep
 fi
 
-# --- Create logs/.gitkeep ---
-mkdir -p logs
-touch logs/.gitkeep
-
+# ── Summary ───────────────────────────────────────────────────────────────────
 echo ""
 echo "  cc-logger installed."
 echo ""
-echo "  Hook:   .claude/hooks/log_session.py"
-echo "  Config: .claude-logger.json"
-echo "  Logs:   ./logs/<session>/"
+if [ "$GLOBAL" = true ]; then
+  echo "  Hook:    ${HOOKS_DIR}/log_session.py"
+  echo "  Config:  ${CONFIG_FILE}  (project .claude-logger.json overrides this)"
+  echo "  Logs:    ~/.cc-logger/<project-name>/<session>/"
+  echo "           (or customise with \"centralLogDir\" in ${CONFIG_FILE})"
+else
+  echo "  Hook:    .claude/hooks/log_session.py"
+  echo "  Config:  .claude-logger.json"
+  echo "  Logs:    ./logs/<session>/"
+fi
 echo ""
 
-# Check for a running Claude Code process (exact binary name match,
-# excluding this installer script itself)
+# Check for running Claude Code (exact binary name match)
 CLAUDE_RUNNING=false
-if pgrep -x "claude" > /dev/null 2>&1; then
-  CLAUDE_RUNNING=true
-elif pgrep -x "Claude" > /dev/null 2>&1; then
-  CLAUDE_RUNNING=true
-fi
+if pgrep -x "claude" > /dev/null 2>&1; then CLAUDE_RUNNING=true; fi
+if pgrep -x "Claude" > /dev/null 2>&1; then CLAUDE_RUNNING=true; fi
 
 if [ "$CLAUDE_RUNNING" = true ]; then
   warn "Claude Code is running — start a NEW session for hooks to take effect."

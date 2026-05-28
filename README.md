@@ -91,11 +91,61 @@ def5678 fix: token expiry edge case
 
 ## Install in 2 minutes
 
+### Option A — Global install ⭐ (recommended)
+
+One install. Every Claude Code session on your machine — terminal, VS Code, Cursor, any project — logs automatically.
+
+**macOS / Linux:**
+```bash
+curl -fsSL https://raw.githubusercontent.com/amit-prabhakar01/cc-logger/main/install.sh | sh -s -- --global
+```
+
+**Windows (PowerShell):**
+```powershell
+iwr -useb https://raw.githubusercontent.com/amit-prabhakar01/cc-logger/main/install.ps1 | iex
+```
+
+Logs land in a central folder, organised by project:
+
+```
+~/.cc-logger/                          # macOS / Linux
+%USERPROFILE%\.cc-logger\             # Windows
+├── api-server_a3f9b2e1/               # project name + path hash
+│   ├── 20260527_143022_xxx/
+│   │   ├── session.md
+│   │   └── session.json
+│   └── 20260528_091544_yyy/
+├── frontend-app_c4d5e6f7/
+└── cc-logger-index.json               # maps folder names → full project paths
+```
+
+**Config hierarchy** — global defaults, per-project overrides:
+
+```
+~/.claude-logger.json                  # machine-wide defaults
+<project>/.claude-logger.json         # override for that project only
+```
+
+**Custom log location** — add `centralLogDir` to `~/.claude-logger.json`:
+
+```json
+{
+  "centralLogDir": "~/Documents/claude-logs"
+}
+```
+
+---
+
+### Option B — Project install
+
+Logs only sessions in the current project. Logs land in `./logs/` inside the project folder.
+
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/amit-prabhakar01/cc-logger/main/install.sh | sh
 ```
 
-That's it. The installer:
+That's it. The project installer:
 - Copies the hook script to `.claude/hooks/log_session.py`
 - Merges the hook into `.claude/settings.json` (backs up existing config first)
 - Adds `logs/` to `.gitignore`
