@@ -173,7 +173,7 @@ def get_central_log_dir(config: Dict[str, Any]) -> Path:
 
     Priority:
       1. config["centralLogDir"]   — explicit user override
-      2. Windows: %USERPROFILE%\.cc-logger
+      2. Windows: %USERPROFILE%\\.cc-logger
       3. macOS / Linux: ~/.cc-logger
     """
     if "centralLogDir" in config:
