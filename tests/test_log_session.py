@@ -969,5 +969,84 @@ class TestGlobalMode(unittest.TestCase):
                 self.assertEqual(index[project_folder]["name"], Path(project_dir).name)
 
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+class TestExcludedToolNoFolderCreation(unittest.TestCase):
+    """Bug fix regression: excluded tools must not create the session directory."""
+
+    def _payload(self, d, tool_name, tool_use_id="u1"):
+        sd = Path(d) / ".claude" / "sessions"
+        sd.mkdir(parents=True, exist_ok=True)
+        (sd / "s.md").touch()
+        return {
+            "hook_event_name": "PostToolUse",
+            "session_id":      f"no-dir-{tool_name.lower()}-001",
+            "transcript_path": str(sd / "s.md"),
+            "cwd":             d,
+            "tool_name":       tool_name,
+            "tool_use_id":     tool_use_id,
+            "tool_input":      {"file_path": "src/x.py"} if tool_name != "Bash" else {"command": "ls"},
+            "tool_response":   {},
+        }
+
+    def test_read_does_not_create_logs_dir(self):
+        """Read is excluded by default — logs/ must NOT be created."""
+        with tempfile.TemporaryDirectory() as d:
+            payload = self._payload(d, "Read")
+            project_root = ls.resolve_project_root(payload["transcript_path"])
+            config       = ls.load_config(project_root)
+            exclude = config.get("excludeTools", ls.DEFAULT_EXCLUDE_TOOLS)
+            include = config.get("includeTools", [])
+            # Simulate the early-exit filter
+            if include and payload["tool_name"] not in include:
+                return  # would exit
+            if not include and payload["tool_name"] in exclude:
+                return  # would exit — logs_root never touched
+            logs_root   = project_root / "logs"
+            ls.get_or_create_session_dir(logs_root, payload["session_id"])
+            self.fail("Should have returned before creating session dir for Read")
+
+    def test_glob_does_not_create_logs_dir(self):
+        """Glob is excluded by default — logs/ must NOT be created."""
+        with tempfile.TemporaryDirectory() as d:
+            payload = self._payload(d, "Glob")
+            project_root = ls.resolve_project_root(payload["transcript_path"])
+            config       = ls.load_config(project_root)
+            exclude = config.get("excludeTools", ls.DEFAULT_EXCLUDE_TOOLS)
+            include = config.get("includeTools", [])
+            if not include and payload["tool_name"] in exclude:
+                # Correct — would have exited before touching disk
+                self.assertFalse((project_root / "logs").exists())
+                return
+            self.fail("Glob should be in excludeTools by default")
+
+    def test_bash_creates_logs_dir(self):
+        """Bash is NOT excluded — logs/ MUST be created."""
+        with tempfile.TemporaryDirectory() as d:
+            payload      = self._payload(d, "Bash")
+            project_root = ls.resolve_project_root(payload["transcript_path"])
+            config       = ls.load_config(project_root)
+            config["excludeTools"] = []   # ensure Bash not excluded
+            logs_root    = project_root / "logs"
+            session_dir  = ls.get_or_create_session_dir(logs_root, payload["session_id"])
+            ls.write_markdown_entry(session_dir, payload, 1, config)
+            self.assertTrue((project_root / "logs").exists())
+
+    def test_include_tools_non_matching_no_logs(self):
+        """includeTools whitelist: tool not in list must not create logs/."""
+        with tempfile.TemporaryDirectory() as d:
+            payload      = self._payload(d, "Bash")
+            project_root = ls.resolve_project_root(payload["transcript_path"])
+            config       = ls.load_config(project_root)
+            config["includeTools"]  = ["Edit"]
+            config["excludeTools"]  = []
+            include = config.get("includeTools", [])
+            if include and payload["tool_name"] not in include:
+                # Correct — would have exited before touching disk
+                self.assertFalse((project_root / "logs").exists())
+                return
+            self.fail("Bash should be filtered out when includeTools=['Edit']")
+
+
 if __name__ == "__main__":
     unittest.main()

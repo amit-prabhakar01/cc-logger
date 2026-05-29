@@ -208,6 +208,47 @@ cc-logger works with the VS Code extension — no extra setup required. Hooks ar
 
 ---
 
+## Uninstall
+
+### macOS / Linux
+
+**Remove project install** (logs stay, hooks gone):
+```bash
+bash uninstall.sh
+```
+
+**Remove global install:**
+```bash
+bash uninstall.sh --global
+```
+
+**Remove and delete all logs** (irreversible — you will be asked to confirm):
+```bash
+bash uninstall.sh --purge               # project: deletes ./logs/
+bash uninstall.sh --global --purge      # global:  deletes ~/.cc-logger/
+```
+
+### Windows (PowerShell)
+
+```powershell
+.\uninstall.ps1              # project install
+.\uninstall.ps1 -Global      # machine-wide install
+.\uninstall.ps1 -Purge       # also delete logs (prompts for confirmation)
+.\uninstall.ps1 -Global -Purge
+```
+
+**What uninstall does:**
+- Removes `log_session.py` from `.claude/hooks/` (project) or `~/.claude/hooks/` (global)
+- Strips cc-logger entries from `settings.json` — other hooks are untouched
+- Deletes `.claude-logger.json` config file
+- Cleans up `logs/.gitkeep` and the cc-logger block in `.gitignore` (project mode)
+- Creates a `settings.json.uninstall.bak` backup before modifying
+
+**Logs are never deleted automatically** — only `--purge` removes them (and only after confirmation). Your session history is always preserved unless you explicitly ask for it to be removed.
+
+
+---
+
 ## Configuration
 
 Drop a `.claude-logger.json` in your project root to customize:

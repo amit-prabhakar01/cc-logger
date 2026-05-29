@@ -795,6 +795,16 @@ def main() -> None:
         else:
             logs_root = project_root / LOG_DIR_NAME
 
+        # Apply tool filters before touching disk — excluded tools must not
+        # create the session directory at all (Stop hook bypasses this check).
+        if hook_event == "PostToolUse":
+            _exclude = config.get("excludeTools", DEFAULT_EXCLUDE_TOOLS)
+            _include = config.get("includeTools", [])
+            if _include and tool_name not in _include:
+                sys.exit(0)
+            if not _include and tool_name in _exclude:
+                sys.exit(0)
+
         session_dir = get_or_create_session_dir(logs_root, session_id)
 
         # P1: Stop event → write session summary and exit
@@ -849,14 +859,6 @@ def main() -> None:
                     counter_file.write_text(str(i))
                     write_markdown_entry(session_dir, recovered_payload, i, config)
                     append_json_entry(session_dir, recovered_payload, i, config)
-
-        # PostToolUse → apply tool filters
-        exclude = config.get("excludeTools", DEFAULT_EXCLUDE_TOOLS)
-        include = config.get("includeTools", [])
-        if include and tool_name not in include:
-            sys.exit(0)
-        if not include and tool_name in exclude:
-            sys.exit(0)
 
         call_index = get_and_increment_call_index(session_dir)
 
