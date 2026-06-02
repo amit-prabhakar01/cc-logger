@@ -353,7 +353,10 @@ def recover_prior_tool_calls(
         # Map: tool_use_id -> raw result content
         tool_results: Dict[str, Any] = {}
 
+        found_current = False  # flag to break BOTH loops once current call is seen
         for line in lines:
+            if found_current:
+                break
             try:
                 msg = json.loads(line)
             except json.JSONDecodeError:
@@ -370,8 +373,9 @@ def recover_prior_tool_calls(
 
                 if btype == "tool_use":
                     tid = block.get("id", "")
-                    # Stop before the current live tool call
+                    # Stop before the current live tool call — break BOTH loops
                     if tid == current_tool_use_id:
+                        found_current = True
                         break
                     if tid and tid not in tool_uses:
                         tool_uses[tid] = {
@@ -436,6 +440,45 @@ TOOL_ICONS = {
     "Read": "👁️", "Grep": "🔍", "Glob": "📂", "Agent": "🤖",
     "WebFetch": "🌐", "WebSearch": "🔎", "TodoWrite": "✅",
 }
+
+
+
+def extract_user_messages(transcript_path: str) -> List[str]:
+    """
+    Read the transcript JSONL and return all user-typed text messages.
+    Tool results (role=user, type=tool_result) are excluded — we only
+    want actual prompts the user typed. Returns [] on any error.
+    """
+    messages: List[str] = []
+    try:
+        with open(transcript_path, "r", encoding="utf-8") as f:
+            lines = [ln.strip() for ln in f if ln.strip()]
+    except Exception:
+        return messages
+
+    for line in lines:
+        try:
+            msg = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content", [])
+        if isinstance(content, str) and content.strip():
+            messages.append(content.strip())
+            continue
+        if isinstance(content, list):
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                # Skip tool results — those are system payloads, not user queries
+                if block.get("type") == "tool_result":
+                    continue
+                if block.get("type") == "text":
+                    text_val = block.get("text", "").strip()
+                    if text_val:
+                        messages.append(text_val)
+    return messages
 
 
 def format_tool_input(tool_name: str, tool_input: Any, max_chars: int) -> str:
@@ -586,8 +629,10 @@ def write_markdown_entry(session_dir: Path, payload: Dict[str, Any],
 # P1: Markdown writer — Stop event (session summary)
 # ---------------------------------------------------------------------------
 
-def write_markdown_summary(session_dir: Path, payload: Dict[str, Any]) -> None:
+def write_markdown_summary(session_dir: Path, payload: Dict[str, Any], config: Optional[Dict[str, Any]] = None) -> None:
     """Append a session summary block when the Stop hook fires."""
+    if config is None:
+        config = {}
     md_file = session_dir / "session.md"
     if not md_file.exists():
         return
@@ -641,17 +686,34 @@ def write_markdown_summary(session_dir: Path, payload: Dict[str, Any]) -> None:
 
     summary += f"\n**Files modified:**\n{files_list}\n"
     summary += f"\n**Commands run:**\n{cmds_list}\n"
+
+    # Append user queries section if transcript is available
+    transcript_path = payload.get("transcript_path", "")
+    user_messages: List[str] = []
+    if transcript_path and config.get("captureUserMessages", True):
+        user_messages = extract_user_messages(transcript_path)
+    if user_messages:
+        summary += f"\n**User queries this session ({len(user_messages)}):**\n"
+        for i, msg in enumerate(user_messages, 1):
+            # Truncate very long messages to keep logs readable
+            preview = msg[:300] + "..." if len(msg) > 300 else msg
+            # Indent multi-line messages
+            preview = preview.replace("\n", "\n  > ")
+            summary += f"\n{i}. > {preview}\n"
+
     summary += f"\n---\n*Logged by [cc-logger](https://github.com/amit-prabhakar01/cc-logger)*\n"
 
     with open(md_file, "a", encoding="utf-8") as f:
         f.write(summary)
 
-    # Update JSON with end time and duration
+    # Update JSON with end time, duration, and user messages
     if data:
         data["ended_at"]  = ended_at.isoformat()
         data["duration"]  = duration_str
         if git_diff:
             data["summary"]["git_diff_stat"] = git_diff
+        if user_messages:
+            data["user_messages"] = user_messages
         try:
             json_file.write_text(json.dumps(data, indent=2, default=str))
         except Exception:
@@ -809,7 +871,7 @@ def main() -> None:
 
         # P1: Stop event → write session summary and exit
         if hook_event == "Stop":
-            write_markdown_summary(session_dir, payload)
+            write_markdown_summary(session_dir, payload, config)
             sys.exit(0)
 
         # Mid-session install recovery:
